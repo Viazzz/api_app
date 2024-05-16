@@ -1,0 +1,112 @@
+# ====================================== AIRFLOW ENVIRONMENT VARIABLES =======================================
+x-environment: &airflow_environment
+  - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+  - AIRFLOW__CORE__LOAD_DEFAULT_CONNECTIONS=False
+  - AIRFLOW__CORE__LOAD_EXAMPLES=False
+  - AIRFLOW__CORE__SQL_ALCHEMY_CONN=postgresql://postgres_airflow:postgres_airflow@postgres_airflow:5432/postgres_airflow
+  - AIRFLOW__CORE__STORE_DAG_CODE=True
+  - AIRFLOW__CORE__STORE_SERIALIZED_DAGS=True
+  - AIRFLOW__WEBSERVER__EXPOSE_CONFIG=True
+  - AIRFLOW__WEBSERVER__RBAC=False
+  - AIRFLOW__WEBSERVER__ENABLE_PROXY_FIX=True
+  - AIRFLOW__WEBSERVER__BASE_URL=http://airflow_web:8080/airflow
+  - AIRFLOW__CORE__FERNET_KEY=ewmzMKBWFtuyrBvP2v3eZkJv5Z-nYjHQxaOjVS2t5JA=
+
+x-airflow-image: &airflow_image apache/airflow:2.0.0-python3.8
+# ====================================== /AIRFLOW ENVIRONMENT VARIABLES ======================================
+
+services:
+
+  db:
+    image: postgres:latest
+    restart: always
+    volumes:
+      - ./data/db:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_DB=postgres
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+    ports:
+      - 5433:5432
+
+  postgres_airflow:
+    image: postgres:latest
+    restart: always
+    volumes:
+      - ./data/postgres_airflow:/var/lib/postgresql/postgres_airflow
+    environment:
+      - POSTGRES_DB=postgres_airflow
+      - POSTGRES_USER=postgres_airflow
+      - POSTGRES_PASSWORD=postgres_airflow
+
+  web:
+    build: .
+    command: ["./wait-for-it.sh", "db:5432", "--",
+              "uwsgi", "--ini", "/code/config/uwsgi/uwsgi.ini"]
+    restart: always
+    volumes:
+      - .:/code
+    environment:
+      - DJANGO_SETTINGS_MODULE=settings.settings.prod
+      - POSTGRES_DB=postgres
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+    depends_on:
+      - db
+
+### airflow #############################################
+
+  airflow_init:
+    build:
+      context: docker/airflow-data
+      args:
+        AIRFLOW_BASE_IMAGE: *airflow_image
+    image: manning-airflow/airflow-data
+    depends_on:
+      - postgres_airflow
+    environment: *airflow_environment
+    entrypoint: /bin/bash
+    command: -c 'airflow db upgrade && sleep 5 && airflow users create --username admin --password admin --firstname Anonymous --lastname Admin --role Admin --email admin@example.org'
+  
+  airflow_web:
+    build:
+      context: docker/airflow-data
+      args:
+        AIRFLOW_BASE_IMAGE: *airflow_image
+    image: manning-airflow/airflow-data
+    restart: always
+    depends_on:
+      - postgres_airflow
+    volumes:
+      - logs:/opt/airflow/logs
+    environment: *airflow_environment
+    command: webserver
+
+  scheduler:
+    build:
+      context: docker/airflow-data
+      args:
+        AIRFLOW_BASE_IMAGE: *airflow_image
+    image: manning-airflow/airflow-data
+    restart: always
+    depends_on:
+      - postgres_airflow
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - logs:/opt/airflow/logs
+      - ./data:/data
+    environment: *airflow_environment
+    command: scheduler
+
+  nginx:
+    image: nginx:1.23.1
+    restart: always
+    volumes:
+      - ./config/nginx:/etc/nginx/templates
+      - .:/code
+    ports:
+      - "80:80"
+
+volumes:
+  data:
+  logs:
